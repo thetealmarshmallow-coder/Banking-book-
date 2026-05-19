@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 
 const initialAccounts = [
-  { id: "ACT-00141", name: "Toccara Evans-Bridges", type: "Checking", balance: 4825.67 },
-  { id: "ACT-00289", name: "Jessica Worthy", type: "Savings", balance: 12340.00 },
-  { id: "ACT-00374", name: "Lee Kennedy", type: "Money Market", balance: 7500.50 },
-  { id: "ACT-00412", name: "Gwendolyn D. Watkins", type: "Checking", balance: 950.25 },
-  { id: "ACT-00531", name: "Overcoming Church of God", type: "Savings", balance: 31200.00 },
+  { id: "ACT-00141", name: "Toccara Evans-Bridges", type: "Checking", balance: 4825.67, accountNumber: "", routingNumber: "" },
+  { id: "ACT-00289", name: "Jessica Worthy", type: "Savings", balance: 12340.00, accountNumber: "", routingNumber: "" },
+  { id: "ACT-00374", name: "Lee Kennedy", type: "Money Market", balance: 7500.50, accountNumber: "", routingNumber: "" },
+  { id: "ACT-00412", name: "Gwendolyn D. Watkins", type: "Checking", balance: 950.25, accountNumber: "", routingNumber: "" },
+  { id: "ACT-00531", name: "Overcoming Church of God", type: "Savings", balance: 31200.00, accountNumber: "", routingNumber: "" },
 ];
 
 const typeColors = {
@@ -33,7 +33,8 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", type: "Checking", balance: "" });
+  const [form, setForm] = useState({ name: "", type: "Checking", balance: "", accountNumber: "", routingNumber: "" });
+  const [showSensitive, setShowSensitive] = useState({});
   const [editMode, setEditMode] = useState(false);
   const [txAmount, setTxAmount] = useState("");
   const [txType, setTxType] = useState("deposit");
@@ -70,14 +71,14 @@ export default function App() {
   }
 
   function openAdd() {
-    setForm({ name: "", type: "Checking", balance: "" });
+    setForm({ name: "", type: "Checking", balance: "", accountNumber: "", routingNumber: "" });
     setEditMode(false);
     setShowForm(true);
     setSelected(null);
   }
 
   function openEdit(acct) {
-    setForm({ name: acct.name, type: acct.type, balance: acct.balance });
+    setForm({ name: acct.name, type: acct.type, balance: acct.balance, accountNumber: acct.accountNumber || "", routingNumber: acct.routingNumber || "" });
     setEditMode(true);
     setShowForm(true);
   }
@@ -88,12 +89,12 @@ export default function App() {
     if (isNaN(bal) || bal < 0) return showToast("Enter a valid balance.", false);
     if (editMode) {
       setAccounts(prev => prev.map(a =>
-        a.id === selected.id ? { ...a, name: form.name.trim(), type: form.type, balance: bal } : a
+        a.id === selected.id ? { ...a, name: form.name.trim(), type: form.type, balance: bal, accountNumber: form.accountNumber.trim(), routingNumber: form.routingNumber.trim() } : a
       ));
-      setSelected(prev => ({ ...prev, name: form.name.trim(), type: form.type, balance: bal }));
+      setSelected(prev => ({ ...prev, name: form.name.trim(), type: form.type, balance: bal, accountNumber: form.accountNumber.trim(), routingNumber: form.routingNumber.trim() }));
       showToast("Account updated.");
     } else {
-      const newAcct = { id: genId(accounts), name: form.name.trim(), type: form.type, balance: bal };
+      const newAcct = { id: genId(accounts), name: form.name.trim(), type: form.type, balance: bal, accountNumber: form.accountNumber.trim(), routingNumber: form.routingNumber.trim() };
       setAccounts(prev => [...prev, newAcct]);
       showToast("Account added.");
     }
@@ -276,6 +277,8 @@ export default function App() {
                 {[
                   { label: "Account Holder Name", key: "name", type: "text", placeholder: "Full legal name" },
                   { label: "Opening Balance ($)", key: "balance", type: "number", placeholder: "0.00" },
+                  { label: "Account Number", key: "accountNumber", type: "text", placeholder: "e.g. 123456789" },
+                  { label: "Routing Number", key: "routingNumber", type: "text", placeholder: "e.g. 021000021" },
                 ].map(f => (
                   <div key={f.key}>
                     <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 2, color: "#c9a84c", textTransform: "uppercase", marginBottom: 7 }}>{f.label}</div>
@@ -337,6 +340,42 @@ export default function App() {
                 </div>
 
                 <div style={{ height: 1, background: "linear-gradient(90deg, #c9a84c33, #222, transparent)", marginBottom: 32 }} />
+
+                {/* Account & Routing Numbers */}
+                <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 36 }}>
+                  {[
+                    { label: "Account Number", key: "accountNumber" },
+                    { label: "Routing Number", key: "routingNumber" },
+                  ].map(({ label, key }) => (
+                    <div key={key} style={{ flex: 1, minWidth: 200 }}>
+                      <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 2, color: "#c9a84c", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
+                      <div style={{
+                        background: "#13151c", border: "1px solid #272932", borderRadius: 3,
+                        padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+                      }}>
+                        <span style={{ fontFamily: "'DM Mono'", fontSize: 13, color: live[key] ? "#e0d8c8" : "#333", letterSpacing: 1 }}>
+                          {live[key]
+                            ? (showSensitive[live.id + key] ? live[key] : "•".repeat(Math.min(live[key].length, 9)))
+                            : "—"}
+                        </span>
+                        {live[key] ? (
+                          <button
+                            className="btn"
+                            onClick={() => setShowSensitive(prev => ({ ...prev, [live.id + key]: !prev[live.id + key] }))}
+                            style={{ background: "transparent", color: "#556", fontSize: 11, padding: "2px 6px", fontFamily: "'DM Mono'", letterSpacing: 1 }}
+                          >
+                            {showSensitive[live.id + key] ? "HIDE" : "SHOW"}
+                          </button>
+                        ) : (
+                          <button className="btn" onClick={() => openEdit(live)} style={{
+                            background: "transparent", color: "#c9a84c44", fontSize: 10,
+                            padding: "2px 6px", fontFamily: "'DM Mono'", letterSpacing: 1,
+                          }}>ADD</button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
 
                 <div style={{ marginBottom: 36 }}>
                   <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 3, color: "#c9a84c", textTransform: "uppercase", marginBottom: 16 }}>Post Transaction</div>
