@@ -1,453 +1,599 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { LOGO } from "./logoData.js";
 
-const initialAccounts = [
-  { id: "ACT-00141", name: "Toccara Evans-Bridges", type: "Checking", balance: 4825.67, accountNumber: "", routingNumber: "" },
-  { id: "ACT-00289", name: "Jessica Worthy", type: "Savings", balance: 12340.00, accountNumber: "", routingNumber: "" },
-  { id: "ACT-00374", name: "Lee Kennedy", type: "Money Market", balance: 7500.50, accountNumber: "", routingNumber: "" },
-  { id: "ACT-00412", name: "Gwendolyn D. Watkins", type: "Checking", balance: 950.25, accountNumber: "", routingNumber: "" },
-  { id: "ACT-00531", name: "Overcoming Church of God", type: "Savings", balance: 31200.00, accountNumber: "", routingNumber: "" },
-];
+// PWA manifest injection
+const manifestData = {
+  name: "Family Financial Ledger",
+  short_name: "FamLedger",
+  description: "TealMarshmallow Family Emergency Financial Ledger",
+  start_url: "/",
+  display: "standalone",
+  background_color: "#f4fdfb",
+  theme_color: "#7accc2",
+  orientation: "portrait-primary",
+  icons: [{ src: LOGO, sizes: "512x512", type: "image/png", purpose: "any maskable" }]
+};
+const manifestBlob = new Blob([JSON.stringify(manifestData)], { type: "application/json" });
+const manifestURL = URL.createObjectURL(manifestBlob);
+const manifestLink = document.createElement("link");
+manifestLink.rel = "manifest";
+manifestLink.href = manifestURL;
+document.head.appendChild(manifestLink);
 
-const typeColors = {
-  "Checking": "#c9a84c",
-  "Savings": "#4c9ac9",
-  "Money Market": "#7a6fc0",
+if ("serviceWorker" in navigator) {
+  const swCode = `
+    const CACHE = "tm-ledger-v1";
+    self.addEventListener("install", e => { self.skipWaiting(); });
+    self.addEventListener("activate", e => { self.clients.claim(); });
+    self.addEventListener("fetch", e => {
+      e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+    });
+  `;
+  const swBlob = new Blob([swCode], { type: "application/javascript" });
+  const swURL = URL.createObjectURL(swBlob);
+  navigator.serviceWorker.register(swURL, { scope: "/" }).catch(console.warn);
+}
+
+const INST_PAL = {
+  "navy federal":["#0a3161","#fff"],"cash app":["#00d632","#fff"],
+  "wells fargo":["#d71e28","#fff"],"bank of america":["#e31837","#fff"],
+  "chase":["#117aca","#fff"],"chime":["#1ec677","#fff"],
+  "ally":["#8c1a6a","#fff"],"zelle":["#6b1fa0","#fff"],
+  "paypal":["#003087","#fff"],"venmo":["#3d95ce","#fff"],
+};
+const PALETTES=[["#d4eee9","#2d7a70"],["#f5e6f0","#8a4a6e"],["#ece6f5","#6a4a8a"],["#f5eedb","#7a6030"],["#e6f0fb","#2d4a8a"]];
+const TYPE_C={
+  Checking:["#e6f5f2","#2d7a70"],Savings:["#f0e6f6","#6a4a8a"],"Money Market":["#f5eedb","#7a6030"],
+  Investment:["#e6f0fb","#2d4a8a"],"Credit Card":["#fdf0f0","#8a2d2d"],Loan:["#fff5e6","#8a5a2d"],Other:["#f0f0f0","#5a5a5a"],
 };
 
-function fmt(n) {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(n);
+function instStyle(name){const k=(name||"").toLowerCase();for(const[key,v]of Object.entries(INST_PAL)){if(k.includes(key))return v;}const s=(name||"").split("").reduce((a,c)=>a+c.charCodeAt(0),0);return PALETTES[s%PALETTES.length];}
+function initials(n){return(n||"?").split(" ").slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";}
+function fmt(n){return new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(parseFloat(n)||0);}
+function mask(v){return v?"•".repeat(Math.min(v.length,9)):"—";}
+function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2);}
+
+function doExportJSON(accounts,contacts){
+  const data={exportedAt:new Date().toISOString(),accounts,contacts};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);const a=document.createElement("a");
+  a.href=url;a.download=`family-ledger-backup-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();URL.revokeObjectURL(url);
+}
+function doExportCSV(accounts,contacts){
+  const h="Account Holder,Institution,Type,Balance,Account Number,Routing Number,Notes";
+  const rows=accounts.map(a=>[a.holder,a.inst,a.type,a.bal,a.acct||"",a.routing||"",(a.notes||"").replace(/,/g,";")].join(","));
+  const ech="\nEmergency Contact Name,Relationship,Phone";
+  const ecr=contacts.map(c=>[c.name,c.rel,c.phone].join(","));
+  const csv=[h,...rows,ech,...ecr].join("\n");
+  const blob=new Blob([csv],{type:"text/csv"});const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;
+  a.download=`family-ledger-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();URL.revokeObjectURL(url);
+}
+function doExportPrint(accounts,contacts,ownerName){
+  const date=new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"});
+  const ar=accounts.map(a=>`<tr><td>${a.holder}</td><td>${a.inst}</td><td>${a.type}</td><td>$${parseFloat(a.bal).toFixed(2)}</td><td>${a.acct||"—"}</td><td>${a.routing||"—"}</td><td>${(a.notes||"—").replace(/,/g,";")}</td></tr>`).join("");
+  const er=contacts.map(c=>`<tr><td>${c.name}</td><td>${c.rel}</td><td>${c.phone||"—"}</td></tr>`).join("");
+  const html=`<!DOCTYPE html><html><head><title>${ownerName} — Family Financial Ledger</title>
+  <style>body{font-family:Georgia,serif;padding:40px;color:#2d4a47}h1{color:#2d7a70;font-size:24px;margin-bottom:4px}.sub{color:#7ab8b0;font-size:13px;margin-bottom:30px}h2{color:#2d7a70;font-size:16px;margin:28px 0 10px;border-bottom:2px solid #c8ece6;padding-bottom:6px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#e6f5f2;color:#2d7a70;padding:8px 10px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px}td{padding:8px 10px;border-bottom:1px solid #eaf5f3;vertical-align:top}tr:last-child td{border-bottom:none}.footer{margin-top:40px;font-size:11px;color:#9bbfbb;text-align:center}</style>
+  </head><body><h1>✦ ${ownerName}'s Family Financial Ledger</h1>
+  <div class="sub">Generated on ${date} — Keep this document in a safe place.</div>
+  <h2>Accounts</h2><table><thead><tr><th>Holder</th><th>Institution</th><th>Type</th><th>Balance</th><th>Account #</th><th>Routing #</th><th>Notes</th></tr></thead><tbody>${ar}</tbody></table>
+  <h2>Emergency Contacts</h2><table><thead><tr><th>Name</th><th>Relationship</th><th>Phone</th></tr></thead><tbody>${er}</tbody></table>
+  <div class="footer">TealMarshmallow Family Financial Ledger — For emergency use. Store securely.</div>
+  </body></html>`;
+  const w=window.open("","_blank");w.document.write(html);w.document.close();w.print();
 }
 
-function genId(accounts) {
-  const nums = accounts.map(a => parseInt(a.id.split("-")[1]));
-  return "ACT-" + String(Math.max(...nums) + 1).padStart(5, "0");
-}
-
-export default function App() {
-  const [accounts, setAccounts] = useState(() => {
-    try {
-      const saved = localStorage.getItem("banking-book-accounts");
-      return saved ? JSON.parse(saved) : initialAccounts;
-    } catch { return initialAccounts; }
-  });
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: "", type: "Checking", balance: "", accountNumber: "", routingNumber: "" });
-  const [showSensitive, setShowSensitive] = useState({});
-  const [editMode, setEditMode] = useState(false);
-  const [txAmount, setTxAmount] = useState("");
-  const [txType, setTxType] = useState("deposit");
-  const [toast, setToast] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [installPrompt, setInstallPrompt] = useState(null);
-  const [showInstallBanner, setShowInstallBanner] = useState(false);
-
-  useEffect(() => {
-    localStorage.setItem("banking-book-accounts", JSON.stringify(accounts));
-  }, [accounts]);
-
-  useEffect(() => {
-    const handler = (e) => {
-      e.preventDefault();
-      setInstallPrompt(e);
-      setShowInstallBanner(true);
-    };
-    window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
-  }, []);
-
-  const filtered = accounts.filter(a =>
-    a.name.toLowerCase().includes(search.toLowerCase()) ||
-    a.id.toLowerCase().includes(search.toLowerCase()) ||
-    a.type.toLowerCase().includes(search.toLowerCase())
+// ─── SPLASH ────────────────────────────────────────────────────────────────────
+function SplashScreen({onDone}){
+  useEffect(()=>{const t=setTimeout(onDone,2200);return()=>clearTimeout(t);},[]);
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#b2e8e0 0%,#d4eee9 40%,#f0e6f6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Nunito','Segoe UI',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600&display=swap');@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}@keyframes load{from{width:0}to{width:100%}}`}</style>
+      <div style={{animation:"fadeUp .7s ease both",display:"flex",flexDirection:"column",alignItems:"center",gap:18}}>
+        <div style={{width:160,height:160,borderRadius:32,overflow:"hidden",border:"4px solid rgba(255,255,255,.7)",boxShadow:"0 8px 40px rgba(122,204,194,.35)",animation:"pulse 2s ease infinite"}}>
+          <img src={LOGO} alt="TealMarshmallow" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+        </div>
+        <div style={{animation:"fadeUp .7s .3s ease both",opacity:0,textAlign:"center"}}>
+          <div style={{fontFamily:"Georgia,serif",fontSize:24,fontWeight:500,color:"#2d7a70",marginBottom:4}}>✦ Family Financial Ledger</div>
+          <div style={{fontSize:13,color:"#5a9e96"}}>by TealMarshmallow</div>
+        </div>
+        <div style={{animation:"fadeUp .7s .6s ease both",opacity:0,marginTop:8}}>
+          <div style={{width:40,height:4,borderRadius:4,background:"rgba(122,204,194,.4)",overflow:"hidden"}}>
+            <div style={{height:"100%",background:"#7accc2",animation:"load 2s linear forwards",borderRadius:4}}/>
+          </div>
+        </div>
+      </div>
+    </div>
   );
+}
 
-  const totalAssets = accounts.reduce((s, a) => s + a.balance, 0);
+// ─── PIN SCREEN ────────────────────────────────────────────────────────────────
+function PinScreen({mode,onSuccess,onSetPin}){
+  const[digits,setDigits]=useState("");
+  const[confirm,setConfirm]=useState("");
+  const[step,setStep]=useState("enter");
+  const[shake,setShake]=useState(false);
+  const[hint,setHint]=useState(mode==="setup"?"Choose a 4–6 digit PIN to protect your ledger.":"Enter your PIN to continue.");
 
-  function showToast(msg, ok = true) {
-    setToast({ msg, ok });
-    setTimeout(() => setToast(null), 2800);
+  function press(d){
+    if(d==="del"){setDigits(p=>p.slice(0,-1));return;}
+    const next=digits+d;
+    if(next.length>6)return;
+    setDigits(next);
+    if(next.length>=4)setTimeout(()=>submit(next),120);
   }
 
-  function openAdd() {
-    setForm({ name: "", type: "Checking", balance: "", accountNumber: "", routingNumber: "" });
-    setEditMode(false);
-    setShowForm(true);
-    setSelected(null);
-  }
-
-  function openEdit(acct) {
-    setForm({ name: acct.name, type: acct.type, balance: acct.balance, accountNumber: acct.accountNumber || "", routingNumber: acct.routingNumber || "" });
-    setEditMode(true);
-    setShowForm(true);
-  }
-
-  function saveForm() {
-    if (!form.name.trim() || !form.balance) return showToast("Fill in all fields.", false);
-    const bal = parseFloat(form.balance);
-    if (isNaN(bal) || bal < 0) return showToast("Enter a valid balance.", false);
-    if (editMode) {
-      setAccounts(prev => prev.map(a =>
-        a.id === selected.id ? { ...a, name: form.name.trim(), type: form.type, balance: bal, accountNumber: form.accountNumber.trim(), routingNumber: form.routingNumber.trim() } : a
-      ));
-      setSelected(prev => ({ ...prev, name: form.name.trim(), type: form.type, balance: bal, accountNumber: form.accountNumber.trim(), routingNumber: form.routingNumber.trim() }));
-      showToast("Account updated.");
-    } else {
-      const newAcct = { id: genId(accounts), name: form.name.trim(), type: form.type, balance: bal, accountNumber: form.accountNumber.trim(), routingNumber: form.routingNumber.trim() };
-      setAccounts(prev => [...prev, newAcct]);
-      showToast("Account added.");
-    }
-    setShowForm(false);
-  }
-
-  function applyTransaction() {
-    const amt = parseFloat(txAmount);
-    if (isNaN(amt) || amt <= 0) return showToast("Enter a valid amount.", false);
-    let success = false;
-    setAccounts(prev => prev.map(a => {
-      if (a.id !== selected.id) return a;
-      const newBal = txType === "deposit" ? a.balance + amt : a.balance - amt;
-      if (newBal < 0) { showToast("Insufficient funds.", false); return a; }
-      success = true;
-      return { ...a, balance: newBal };
-    }));
-    if (success) {
-      setSelected(prev => {
-        const newBal = txType === "deposit" ? prev.balance + amt : prev.balance - amt;
-        return { ...prev, balance: newBal };
-      });
-      showToast(`${txType === "deposit" ? "Deposited" : "Withdrew"} ${fmt(amt)}.`);
-      setTxAmount("");
+  function submit(pin){
+    if(mode==="setup"){
+      if(step==="enter"){setConfirm(pin);setDigits("");setStep("confirm");setHint("Confirm your PIN — enter it one more time.");}
+      else{
+        if(pin===confirm)onSetPin(pin);
+        else{setShake(true);setDigits("");setStep("enter");setConfirm("");setHint("Those didn't match. Let's try again.");setTimeout(()=>setShake(false),600);}
+      }
+    }else{
+      const stored=localStorage.getItem("tm_pin");
+      if(pin===stored)onSuccess();
+      else{setShake(true);setDigits("");setHint("Hmm, that's not right. Try again.");setTimeout(()=>setShake(false),600);}
     }
   }
 
-  function deleteAccount() {
-    setAccounts(prev => prev.filter(a => a.id !== selected.id));
-    setSelected(null);
-    setConfirmDelete(false);
-    showToast("Account removed.");
+  const keys=["1","2","3","4","5","6","7","8","9","","0","del"];
+  return(
+    <div style={{minHeight:"100vh",background:"#f4fdfb",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Nunito','Segoe UI',sans-serif",padding:24}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600&display=swap');@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}`}</style>
+      <div style={{width:110,height:110,borderRadius:"50%",overflow:"hidden",border:"4px solid #c8ece6",boxShadow:"0 4px 24px rgba(122,204,194,.25)",marginBottom:20,flexShrink:0}}>
+        <img src={LOGO} alt="TealMarshmallow" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+      </div>
+      <div style={{fontFamily:"Georgia,serif",fontSize:20,fontWeight:500,color:"#2d7a70",marginBottom:4}}>✦ Family Financial Ledger</div>
+      <div style={{fontSize:12,color:"#7ab8b0",marginBottom:28,textAlign:"center",maxWidth:260,lineHeight:1.5}}>{hint}</div>
+      <div style={{display:"flex",gap:14,marginBottom:32,animation:shake?"shake 0.4s ease":"none"}}>
+        {[0,1,2,3,4,5].map(i=>(
+          <div key={i} style={{width:14,height:14,borderRadius:"50%",background:i<digits.length?"#7accc2":"transparent",border:"2px solid",borderColor:i<digits.length?"#7accc2":"#c8ece6",transition:"all .15s"}}/>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,72px)",gap:12}}>
+        {keys.map((k,i)=>(
+          k===""?<div key={i}/>:
+          <button key={i} onClick={()=>press(k)} style={{height:72,borderRadius:16,border:"1.5px solid #c8ece6",background:k==="del"?"#fdf6f0":"#fff",color:k==="del"?"#c47a5a":"#2d4a47",fontSize:k==="del"?18:22,fontWeight:600,fontFamily:"'Nunito',sans-serif",cursor:"pointer",boxShadow:"0 2px 8px rgba(122,204,194,.1)"}}>
+            {k==="del"?"⌫":k}
+          </button>
+        ))}
+      </div>
+      {mode==="unlock"&&<div style={{marginTop:24,fontSize:11,color:"#b0c8c4",textAlign:"center",lineHeight:1.6}}>Forgot your PIN? Clear your browser data<br/>to reset the app.</div>}
+    </div>
+  );
+}
+
+// ─── WELCOME SETUP ─────────────────────────────────────────────────────────────
+function WelcomeSetup({onComplete}){
+  const[name,setName]=useState("");
+  const[welcome,setWelcome]=useState("");
+  const[error,setError]=useState("");
+
+  function finish(){
+    if(!name.trim()){setError("We need your name to get started, love.");return;}
+    onComplete(name.trim(),welcome.trim());
   }
 
-  async function handleInstall() {
-    if (!installPrompt) return;
+  return(
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#b2e8e0 0%,#d4eee9 50%,#f0e6f6 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:"'Nunito','Segoe UI',sans-serif",padding:24}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600&display=swap');`}</style>
+      <div style={{width:"100%",maxWidth:400,background:"#fff",borderRadius:24,padding:"32px 28px",border:"2px solid #c8ece6",boxShadow:"0 8px 40px rgba(122,204,194,.15)"}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{width:80,height:80,borderRadius:20,overflow:"hidden",border:"3px solid #c8ece6",margin:"0 auto 14px"}}>
+            <img src={LOGO} alt="logo" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+          </div>
+          <div style={{fontFamily:"Georgia,serif",fontSize:20,color:"#2d7a70",marginBottom:6}}>Welcome, love. ✦</div>
+          <div style={{fontSize:12,color:"#7ab8b0",lineHeight:1.6}}>Let's make this ledger yours.<br/>Just a couple of things to get started.</div>
+        </div>
+
+        <div style={{marginBottom:16}}>
+          <label style={{display:"block",fontSize:11,fontWeight:600,color:"#7ab8b0",marginBottom:5,letterSpacing:".5px",textTransform:"uppercase"}}>Your Name</label>
+          <input
+            value={name}
+            onChange={e=>{setName(e.target.value);setError("");}}
+            placeholder="What do you go by?"
+            style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1.5px solid #d4eeea",fontFamily:"'Nunito',sans-serif",fontSize:14,color:"#2d4a47",background:"#f7fdf9",outline:"none",boxSizing:"border-box"}}
+          />
+          {error&&<div style={{fontSize:11,color:"#b05050",marginTop:5}}>{error}</div>}
+        </div>
+
+        <div style={{marginBottom:24}}>
+          <label style={{display:"block",fontSize:11,fontWeight:600,color:"#7ab8b0",marginBottom:5,letterSpacing:".5px",textTransform:"uppercase"}}>Personal Welcome Message <span style={{color:"#c8ece6"}}>(optional)</span></label>
+          <textarea
+            value={welcome}
+            onChange={e=>setWelcome(e.target.value)}
+            placeholder="e.g. This ledger holds my family's financial truth. If you're reading this in an emergency, everything you need is here."
+            style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1.5px solid #d4eeea",fontFamily:"'Nunito',sans-serif",fontSize:13,color:"#2d4a47",background:"#f7fdf9",outline:"none",height:100,resize:"vertical",boxSizing:"border-box",lineHeight:1.5}}
+          />
+          <div style={{fontSize:11,color:"#b0c8c4",marginTop:4}}>This will appear on your home screen as a soft reminder of why this ledger exists.</div>
+        </div>
+
+        <button
+          onClick={finish}
+          style={{width:"100%",padding:"13px",borderRadius:18,border:"none",background:"#7accc2",color:"#fff",fontFamily:"'Nunito',sans-serif",fontSize:14,fontWeight:600,cursor:"pointer"}}>
+          Let's get started ✦
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ──────────────────────────────────────────────────────────────────
+export default function App(){
+  const[appState,setAppState]=useState("splash");
+  const[ownerName,setOwnerName]=useState(()=>localStorage.getItem("tm_owner_name")||"");
+  const[welcomeMsg,setWelcomeMsg]=useState(()=>localStorage.getItem("tm_welcome_msg")||"");
+  const[accounts,setAccounts]=useState(()=>{try{return JSON.parse(localStorage.getItem("tm_fam_accts"))||[];}catch{return[];}});
+  const[contacts,setContacts]=useState(()=>{try{return JSON.parse(localStorage.getItem("tm_fam_ec"))||[];}catch{return[];}});
+  const[tab,setTab]=useState("accounts");
+  const[activeAcct,setActiveAcct]=useState(null);
+  const[activeEc,setActiveEc]=useState(null);
+  const[search,setSearch]=useState("");
+  const[acctModal,setAcctModal]=useState(false);
+  const[editAcctId,setEditAcctId]=useState(null);
+  const[acctForm,setAcctForm]=useState({holder:"",inst:"",type:"Checking",bal:"",acct:"",routing:"",notes:""});
+  const[ecModal,setEcModal]=useState(false);
+  const[editEcId,setEditEcId]=useState(null);
+  const[ecForm,setEcForm]=useState({name:"",rel:"",phone:""});
+  const[toast,setToast]=useState(null);
+  const[installPrompt,setInstallPrompt]=useState(null);
+  const[showInstall,setShowInstall]=useState(false);
+  const[changingPin,setChangingPin]=useState(false);
+  const fileRef=useRef();
+
+  useEffect(()=>{localStorage.setItem("tm_fam_accts",JSON.stringify(accounts));},[accounts]);
+  useEffect(()=>{localStorage.setItem("tm_fam_ec",JSON.stringify(contacts));},[contacts]);
+
+  useEffect(()=>{
+    const handler=(e)=>{e.preventDefault();setInstallPrompt(e);setShowInstall(true);};
+    window.addEventListener("beforeinstallprompt",handler);
+    return()=>window.removeEventListener("beforeinstallprompt",handler);
+  },[]);
+
+  function afterSplash(){
+    const pin=localStorage.getItem("tm_pin");
+    const name=localStorage.getItem("tm_owner_name");
+    if(!pin) setAppState("setup_pin");
+    else if(!name) setAppState("setup_welcome");
+    else setAppState("locked");
+  }
+
+  function handleSetPin(pin){
+    localStorage.setItem("tm_pin",pin);
+    if(changingPin){setChangingPin(false);notify("PIN updated ✦");setAppState("unlocked");}
+    else setAppState("setup_welcome");
+  }
+
+  function handleWelcomeComplete(name,msg){
+    localStorage.setItem("tm_owner_name",name);
+    localStorage.setItem("tm_welcome_msg",msg);
+    setOwnerName(name);
+    setWelcomeMsg(msg);
+    setAppState("unlocked");
+  }
+
+  function notify(msg,ok=true){setToast({msg,ok});setTimeout(()=>setToast(null),3000);}
+  function toggleRev(id,field){setAccounts(prev=>prev.map(a=>a.id===id?{...a,rev:{...a.rev,[field]:!a.rev?.[field]}}:a));}
+
+  function openAddAcct(){setAcctForm({holder:ownerName,inst:"",type:"Checking",bal:"",acct:"",routing:"",notes:""});setEditAcctId(null);setAcctModal(true);}
+  function openEditAcct(a){setAcctForm({holder:a.holder,inst:a.inst,type:a.type,bal:a.bal,acct:a.acct||"",routing:a.routing||"",notes:a.notes||""});setEditAcctId(a.id);setAcctModal(true);}
+  function saveAcct(){
+    const entry={id:editAcctId||uid(),holder:acctForm.holder.trim()||ownerName,inst:acctForm.inst.trim()||"Other",type:acctForm.type,bal:parseFloat(acctForm.bal)||0,acct:acctForm.acct.trim(),routing:acctForm.routing.trim(),notes:acctForm.notes.trim(),rev:{}};
+    if(editAcctId)setAccounts(prev=>prev.map(a=>a.id===editAcctId?entry:a));
+    else setAccounts(prev=>[...prev,entry]);
+    setAcctModal(false);notify(editAcctId?"Account updated ✦":"Account added ✦");
+  }
+  function deleteAcct(){setAccounts(prev=>prev.filter(a=>a.id!==editAcctId));setActiveAcct(null);setAcctModal(false);notify("Account removed.");}
+
+  function openAddEc(){setEcForm({name:"",rel:"",phone:""});setEditEcId(null);setEcModal(true);}
+  function openEditEc(c){setEcForm({name:c.name,rel:c.rel,phone:c.phone});setEditEcId(c.id);setEcModal(true);}
+  function saveEc(){
+    const entry={id:editEcId||uid(),name:ecForm.name.trim()||"Unknown",rel:ecForm.rel.trim()||"Contact",phone:ecForm.phone.trim()};
+    if(editEcId)setContacts(prev=>prev.map(c=>c.id===editEcId?entry:c));
+    else setContacts(prev=>[...prev,entry]);
+    setEcModal(false);notify(editEcId?"Contact updated 🤍":"Contact added 🤍");
+  }
+  function deleteEc(){setContacts(prev=>prev.filter(c=>c.id!==editEcId));setActiveEc(null);setEcModal(false);notify("Contact removed.");}
+
+  function handleRestoreFile(e){
+    const file=e.target.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=(ev)=>{
+      try{
+        const d=JSON.parse(ev.target.result);
+        if(d.accounts)setAccounts(d.accounts);
+        if(d.contacts)setContacts(d.contacts);
+        if(d.ownerName){localStorage.setItem("tm_owner_name",d.ownerName);setOwnerName(d.ownerName);}
+        if(d.welcomeMsg){localStorage.setItem("tm_welcome_msg",d.welcomeMsg);setWelcomeMsg(d.welcomeMsg);}
+        notify("Backup restored ✦");
+      }catch{notify("Could not read that file.",false);}
+    };
+    reader.readAsText(file);e.target.value="";
+  }
+
+  function doExportJSONFull(){
+    const data={exportedAt:new Date().toISOString(),ownerName,welcomeMsg,accounts,contacts};
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");
+    a.href=url;a.download=`family-ledger-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();URL.revokeObjectURL(url);
+  }
+
+  async function handleInstall(){
+    if(!installPrompt)return;
     installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice;
-    if (outcome === "accepted") {
-      setShowInstallBanner(false);
-      showToast("App installed! Check your home screen.");
-    }
+    const{outcome}=await installPrompt.userChoice;
+    if(outcome==="accepted")setShowInstall(false);
     setInstallPrompt(null);
   }
 
-  return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#0d0f14",
-      fontFamily: "'Cormorant Garamond', Georgia, serif",
-      color: "#e8e0d0",
-      display: "flex",
-      flexDirection: "column",
-    }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600&family=DM+Mono:wght@300;400&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: #111; }
-        ::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
-        input, select { outline: none; font-family: 'DM Mono', monospace; }
-        .acct-row { transition: background 0.18s, border-color 0.18s; cursor: pointer; }
-        .acct-row:hover { background: rgba(201,168,76,0.07) !important; }
-        .acct-row.active { background: rgba(201,168,76,0.13) !important; border-left-color: #c9a84c !important; }
-        .btn { transition: background 0.15s, transform 0.1s, opacity 0.15s; cursor: pointer; border: none; font-family: 'DM Mono', monospace; }
-        .btn:hover { opacity: 0.85; }
-        .btn:active { transform: scale(0.97); }
-        .fade-in { animation: fadeIn 0.3s ease; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-        .toast { animation: toastIn 0.3s ease; }
-        @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: none; } }
-      `}</style>
+  // Routing
+  if(appState==="splash")return <SplashScreen onDone={afterSplash}/>;
+  if(appState==="setup_pin"||changingPin)return <PinScreen mode="setup" onSetPin={handleSetPin}/>;
+  if(appState==="setup_welcome")return <WelcomeSetup onComplete={handleWelcomeComplete}/>;
+  if(appState==="locked")return <PinScreen mode="unlock" onSuccess={()=>setAppState("unlocked")}/>;
 
-      {showInstallBanner && (
-        <div style={{
-          background: "#1a1e14", borderBottom: "1px solid #c9a84c44",
-          padding: "10px 20px", display: "flex", justifyContent: "space-between",
-          alignItems: "center", gap: 12,
-        }}>
-          <span style={{ fontFamily: "'DM Mono'", fontSize: 12, color: "#c9a84c" }}>
-            📲 Install Banking Book on your home screen
-          </span>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn" onClick={handleInstall} style={{
-              background: "#c9a84c", color: "#0d0f14", padding: "6px 16px",
-              borderRadius: 3, fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase",
-            }}>Install</button>
-            <button className="btn" onClick={() => setShowInstallBanner(false)} style={{
-              background: "transparent", color: "#556", padding: "6px 10px", borderRadius: 3, fontSize: 11,
-            }}>✕</button>
-          </div>
-        </div>
-      )}
+  const totalBal=accounts.reduce((s,a)=>s+(parseFloat(a.bal)||0),0);
+  const holders=new Set(accounts.map(a=>a.holder)).size;
+  const filtered=accounts.filter(a=>!search||[a.holder,a.inst,a.type,a.notes].join(" ").toLowerCase().includes(search.toLowerCase()));
+  const byHolder={};
+  filtered.forEach(a=>{(byHolder[a.holder]=byHolder[a.holder]||[]).push(a);});
 
-      <div style={{
-        background: "linear-gradient(135deg, #111318 0%, #0d0f14 100%)",
-        borderBottom: "1px solid #222",
-        padding: "28px 40px 20px",
-        display: "flex", alignItems: "flex-end", justifyContent: "space-between",
-        flexWrap: "wrap", gap: 16,
-      }}>
-        <div>
-          <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 4, color: "#c9a84c", marginBottom: 6, textTransform: "uppercase" }}>Private Ledger</div>
-          <h1 style={{ fontSize: 32, fontWeight: 300, letterSpacing: 1, color: "#f0e8d8" }}>Banking Book</h1>
-          <div style={{ fontFamily: "'DM Mono'", fontSize: 11, color: "#556", marginTop: 4 }}>
-            {accounts.length} accounts · Total Assets: <span style={{ color: "#a8d08d" }}>{fmt(totalAssets)}</span>
-          </div>
-        </div>
-        <button className="btn" onClick={openAdd} style={{
-          background: "#c9a84c", color: "#0d0f14", padding: "10px 22px",
-          borderRadius: 3, fontSize: 12, letterSpacing: 2, fontWeight: 500, textTransform: "uppercase",
-        }}>+ New Account</button>
-      </div>
+  const s={
+    wrap:{minHeight:"100vh",background:"#f4fdfb",fontFamily:"'Nunito','Segoe UI',sans-serif",padding:"0 0 80px"},
+    inner:{maxWidth:600,margin:"0 auto",padding:"16px 14px"},
+    header:{background:"linear-gradient(135deg,#b2e8e0 0%,#d4eee9 40%,#f0e6f6 100%)",borderRadius:20,padding:"16px 20px",marginBottom:16,border:"1.5px solid #c8ece6"},
+    headerTop:{display:"flex",alignItems:"center",gap:14,marginBottom:welcomeMsg?10:0},
+    headerImg:{width:52,height:52,borderRadius:12,overflow:"hidden",border:"2px solid rgba(255,255,255,.8)",flexShrink:0},
+    h1:{fontFamily:"Georgia,serif",fontSize:18,fontWeight:500,color:"#2d7a70",margin:"0 0 2px"},
+    subtext:{fontSize:11,color:"#5a9e96",lineHeight:1.4,margin:0},
+    welcomeNote:{fontSize:12,color:"#7a5a3a",fontStyle:"italic",background:"#fdf6f0",borderLeft:"3px solid #e8c4a0",borderRadius:"0 10px 10px 0",padding:"8px 12px",lineHeight:1.5},
+    installBanner:{background:"#fff8e6",border:"1.5px solid #e8d4a0",borderRadius:14,padding:"10px 16px",marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"},
+    tabs:{display:"flex",gap:8,marginBottom:16},
+    tab:(on)=>({flex:1,padding:"9px 6px",borderRadius:14,border:`1.5px solid ${on?"#7accc2":"#d4eeea"}`,background:on?"#7accc2":"#f7fdf9",fontFamily:"'Nunito',sans-serif",fontSize:11,fontWeight:600,color:on?"#fff":"#7ab8b0",cursor:"pointer"}),
+    stats:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:16},
+    stat:{background:"#fff",border:"1px solid #d4eeea",borderRadius:14,padding:"12px 14px",textAlign:"center"},
+    statVal:{fontSize:15,fontWeight:600,color:"#2d7a70"},
+    statLbl:{fontSize:10,color:"#7ab8b0",marginTop:2},
+    bar:{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap",alignItems:"center"},
+    search:{flex:1,minWidth:150,padding:"8px 14px",borderRadius:18,border:"1.5px solid #c8ece6",fontFamily:"'Nunito',sans-serif",fontSize:13,background:"#f7fdf9",color:"#2d4a47",outline:"none"},
+    btn:(color="teal")=>({padding:"8px 16px",borderRadius:18,border:`1.5px solid ${color==="teal"?"#7accc2":color==="blush"?"#ddb0cc":color==="gold"?"#e8c87a":color==="danger"?"#e8c4c4":"#c8ece6"}`,background:color==="teal"?"#7accc2":color==="blush"?"#e8c4d8":color==="gold"?"#f5eedb":color==="danger"?"#fdf0f0":"#f0f9f7",color:color==="teal"?"#fff":color==="blush"?"#8a4a6e":color==="gold"?"#7a6030":color==="danger"?"#b05050":"#2d7a70",fontFamily:"'Nunito',sans-serif",fontSize:12,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"}),
+    grpTitle:{fontSize:11,fontWeight:600,letterSpacing:"1.5px",textTransform:"uppercase",color:"#9bbfbb",margin:"14px 0 8px 4px"},
+    card:(open)=>({background:open?"#f4fdfc":"#fff",border:`1.5px solid ${open?"#7accc2":"#e0f2ee"}`,borderRadius:16,padding:"14px 16px",marginBottom:9,cursor:"pointer"}),
+    ecCard:(open)=>({background:open?"#fdf7ff":"#fff",border:`1.5px solid ${open?"#c4a0d4":"#f0e6f6"}`,borderRadius:16,padding:"14px 16px",marginBottom:9,cursor:"pointer"}),
+    exportCard:{background:"#fff",border:"1.5px solid #e8d4a0",borderRadius:16,padding:"18px 20px",marginBottom:12},
+    cardTop:{display:"flex",alignItems:"center",gap:11},
+    logo:(bg,fg)=>({width:36,height:36,borderRadius:10,background:bg,color:fg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,flexShrink:0}),
+    avatar:{width:36,height:36,borderRadius:"50%",background:"#f0e6f6",color:"#8a4a6e",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,flexShrink:0},
+    cardInfo:{flex:1,minWidth:0},
+    cardName:{fontSize:13,fontWeight:600,color:"#2d4a47",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"},
+    cardSub:{fontSize:11,color:"#7ab8b0",marginTop:1},
+    cardBal:{fontSize:14,fontWeight:600,color:"#2d7a70",textAlign:"right"},
+    badge:(bg,fg)=>({display:"inline-block",padding:"2px 8px",borderRadius:8,fontSize:10,fontWeight:600,background:bg,color:fg,marginTop:2}),
+    details:{marginTop:12,borderTop:"1px solid #eaf5f3",paddingTop:11},
+    row:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 0",borderBottom:"1px dashed #e8f5f2",fontSize:12},
+    rl:{color:"#7ab8b0",fontSize:11},
+    rv:{color:"#2d4a47",fontWeight:500,display:"flex",alignItems:"center",gap:5},
+    reveal:{fontSize:10,color:"#7accc2",cursor:"pointer",border:"1px solid #c8ece6",background:"none",fontFamily:"'Nunito',sans-serif",padding:"1px 7px",borderRadius:8},
+    note:{marginTop:9,background:"#fdf6f0",borderLeft:"3px solid #e8c4a0",borderRadius:"0 10px 10px 0",padding:"7px 11px",fontSize:11,color:"#7a5a3a",fontStyle:"italic",lineHeight:1.5},
+    cardBtns:{marginTop:10,display:"flex",gap:7},
+    overlay:{position:"fixed",inset:0,background:"rgba(45,74,71,.4)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:999,padding:16},
+    modal:(color)=>({background:"#fff",borderRadius:22,padding:"24px 22px",width:"100%",maxWidth:430,border:`2px solid ${color==="blush"?"#ddb0cc":"#c8ece6"}`,maxHeight:"88vh",overflowY:"auto"}),
+    modalH2:(color)=>({fontFamily:"Georgia,serif",fontSize:18,color:color==="blush"?"#8a4a6e":"#2d7a70",margin:"0 0 16px"}),
+    flbl:{display:"block",fontSize:11,fontWeight:600,color:"#7ab8b0",marginBottom:4,letterSpacing:".5px",textTransform:"uppercase"},
+    finp:(color)=>({width:"100%",padding:"8px 12px",borderRadius:11,border:`1.5px solid ${color==="blush"?"#ddb0cc":"#d4eeea"}`,fontFamily:"'Nunito',sans-serif",fontSize:13,color:"#2d4a47",background:color==="blush"?"#fdf7ff":"#f7fdf9",outline:"none",marginBottom:12,boxSizing:"border-box"}),
+    modalBtns:{display:"flex",gap:8,marginTop:4,flexWrap:"wrap"},
+    empty:{textAlign:"center",padding:"36px 20px",color:"#9bbfbb",fontSize:13},
+    toastBox:(ok)=>({position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",background:ok?"#2d7a70":"#b05050",color:"#fff",padding:"11px 22px",borderRadius:18,fontSize:13,fontWeight:600,zIndex:9999,whiteSpace:"nowrap",boxShadow:"0 4px 20px rgba(0,0,0,.15)"}),
+  };
 
-      <div style={{ display: "flex", flex: 1, overflow: "hidden", minHeight: 0 }}>
-        <div style={{
-          width: 340, minWidth: 260, borderRight: "1px solid #1e2028",
-          display: "flex", flexDirection: "column", background: "#0d0f14",
-        }}>
-          <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid #1a1c22" }}>
-            <input
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search accounts…"
-              style={{
-                width: "100%", background: "#13151c", border: "1px solid #272932",
-                borderRadius: 3, padding: "9px 14px", fontSize: 12, color: "#c8c0b0", letterSpacing: 0.5,
-              }}
-            />
-          </div>
-          <div style={{ flex: 1, overflowY: "auto" }}>
-            {filtered.length === 0 && (
-              <div style={{ padding: 32, textAlign: "center", color: "#444", fontSize: 13 }}>No accounts found.</div>
-            )}
-            {filtered.map(acct => (
-              <div
-                key={acct.id}
-                className={`acct-row${selected?.id === acct.id ? " active" : ""}`}
-                onClick={() => { setSelected(acct); setShowForm(false); setTxAmount(""); setConfirmDelete(false); }}
-                style={{
-                  padding: "14px 20px", borderLeft: "3px solid transparent",
-                  borderBottom: "1px solid #111418", background: "transparent",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 500, color: "#ede5d5", letterSpacing: 0.3, lineHeight: 1.3 }}>{acct.name}</div>
-                    <div style={{ fontFamily: "'DM Mono'", fontSize: 10, color: "#556", marginTop: 3 }}>{acct.id}</div>
-                    <div style={{
-                      display: "inline-block", marginTop: 5, padding: "2px 8px", borderRadius: 2,
-                      fontSize: 10, fontFamily: "'DM Mono'", letterSpacing: 1,
-                      background: (typeColors[acct.type] || "#888") + "22",
-                      color: typeColors[acct.type] || "#888",
-                      border: `1px solid ${(typeColors[acct.type] || "#888")}44`,
-                    }}>{acct.type}</div>
-                  </div>
-                  <div style={{ textAlign: "right", fontFamily: "'DM Mono'", fontSize: 13, color: "#a8d08d" }}>
-                    {fmt(acct.balance)}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+  return(
+    <div style={s.wrap}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;500;600&display=swap');*{box-sizing:border-box;}input:focus,select:focus,textarea:focus{border-color:#7accc2!important;outline:none;}`}</style>
+      <div style={s.inner}>
 
-        <div style={{ flex: 1, overflowY: "auto", background: "#0f1118", padding: "32px 40px" }}>
-          {!selected && !showForm && (
-            <div style={{ textAlign: "center", marginTop: 80, color: "#333" }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>🏦</div>
-              <div style={{ fontSize: 16, fontWeight: 300, letterSpacing: 1 }}>Select an account to view details</div>
+        {showInstall&&(
+          <div style={s.installBanner}>
+            <span style={{fontSize:12,color:"#7a6030"}}>📲 Add this app to your home screen</span>
+            <div style={{display:"flex",gap:7}}>
+              <button style={s.btn("teal")} onClick={handleInstall}>Install</button>
+              <button style={{...s.btn("soft"),fontSize:11}} onClick={()=>setShowInstall(false)}>✕</button>
             </div>
-          )}
+          </div>
+        )}
 
-          {showForm && (
-            <div className="fade-in">
-              <div style={{ fontSize: 22, fontWeight: 300, color: "#f0e8d8", marginBottom: 28, letterSpacing: 0.5 }}>
-                {editMode ? "Edit Account" : "New Account"}
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 460 }}>
-                {[
-                  { label: "Account Holder Name", key: "name", type: "text", placeholder: "Full legal name" },
-                  { label: "Opening Balance ($)", key: "balance", type: "number", placeholder: "0.00" },
-                  { label: "Account Number", key: "accountNumber", type: "text", placeholder: "e.g. 123456789" },
-                  { label: "Routing Number", key: "routingNumber", type: "text", placeholder: "e.g. 021000021" },
-                ].map(f => (
-                  <div key={f.key}>
-                    <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 2, color: "#c9a84c", textTransform: "uppercase", marginBottom: 7 }}>{f.label}</div>
-                    <input
-                      type={f.type}
-                      value={form[f.key]}
-                      placeholder={f.placeholder}
-                      onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
-                      style={{
-                        width: "100%", background: "#13151c", border: "1px solid #272932",
-                        borderRadius: 3, padding: "11px 14px", fontSize: 14, color: "#e0d8c8",
-                      }}
-                    />
-                  </div>
-                ))}
-                <div>
-                  <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 2, color: "#c9a84c", textTransform: "uppercase", marginBottom: 7 }}>Account Type</div>
-                  <select value={form.type} onChange={e => setForm(p => ({ ...p, type: e.target.value }))} style={{
-                    width: "100%", background: "#13151c", border: "1px solid #272932",
-                    borderRadius: 3, padding: "11px 14px", fontSize: 13, color: "#e0d8c8",
-                  }}>
-                    {["Checking", "Savings", "Money Market"].map(t => <option key={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
-                  <button className="btn" onClick={saveForm} style={{
-                    background: "#c9a84c", color: "#0d0f14", padding: "11px 28px",
-                    borderRadius: 3, fontSize: 12, letterSpacing: 2, textTransform: "uppercase", fontWeight: 500,
-                  }}>Save</button>
-                  <button className="btn" onClick={() => setShowForm(false)} style={{
-                    background: "#1e2028", color: "#888", padding: "11px 20px", borderRadius: 3, fontSize: 12,
-                  }}>Cancel</button>
-                </div>
-              </div>
+        {/* Header */}
+        <div style={s.header}>
+          <div style={s.headerTop}>
+            <div style={s.headerImg}><img src={LOGO} alt="logo" style={{width:"100%",height:"100%",objectFit:"cover"}}/></div>
+            <div style={{flex:1}}>
+              <h1 style={s.h1}>✦ {ownerName ? `${ownerName}'s` : "Family"} Financial Ledger</h1>
+              <p style={s.subtext}>by TealMarshmallow</p>
             </div>
-          )}
+            <button title="Lock app" onClick={()=>setAppState("locked")} style={{background:"transparent",border:"1.5px solid #c8ece6",borderRadius:10,padding:"6px 10px",cursor:"pointer",fontSize:16,color:"#7ab8b0",flexShrink:0}}>🔒</button>
+          </div>
+          {welcomeMsg&&<div style={s.welcomeNote}>"{welcomeMsg}"</div>}
+        </div>
 
-          {selected && !showForm && (() => {
-            const live = accounts.find(a => a.id === selected.id) || selected;
-            return (
-              <div className="fade-in">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16, marginBottom: 32 }}>
-                  <div>
-                    <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 3, color: "#556", textTransform: "uppercase", marginBottom: 6 }}>{live.id}</div>
-                    <h2 style={{ fontSize: 28, fontWeight: 300, color: "#f0e8d8", letterSpacing: 0.5 }}>{live.name}</h2>
-                    <div style={{
-                      display: "inline-block", marginTop: 8, padding: "3px 12px", borderRadius: 2,
-                      fontSize: 11, fontFamily: "'DM Mono'", letterSpacing: 1.5,
-                      background: (typeColors[live.type] || "#888") + "22",
-                      color: typeColors[live.type] || "#888",
-                      border: `1px solid ${(typeColors[live.type] || "#888")}44`,
-                      textTransform: "uppercase",
-                    }}>{live.type}</div>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontFamily: "'DM Mono'", fontSize: 11, color: "#556", letterSpacing: 2, textTransform: "uppercase", marginBottom: 4 }}>Current Balance</div>
-                    <div style={{ fontFamily: "'DM Mono'", fontSize: 32, color: "#a8d08d", fontWeight: 300 }}>{fmt(live.balance)}</div>
-                  </div>
-                </div>
+        {/* Tabs */}
+        <div style={s.tabs}>
+          <button style={s.tab(tab==="accounts")} onClick={()=>setTab("accounts")}>🏦 Accounts</button>
+          <button style={s.tab(tab==="contacts")} onClick={()=>setTab("contacts")}>🤍 Contacts</button>
+          <button style={s.tab(tab==="backup")} onClick={()=>setTab("backup")}>💾 Backup</button>
+          <button style={s.tab(tab==="settings")} onClick={()=>setTab("settings")}>⚙️</button>
+        </div>
 
-                <div style={{ height: 1, background: "linear-gradient(90deg, #c9a84c33, #222, transparent)", marginBottom: 32 }} />
-
-                {/* Account & Routing Numbers */}
-                <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 36 }}>
-                  {[
-                    { label: "Account Number", key: "accountNumber" },
-                    { label: "Routing Number", key: "routingNumber" },
-                  ].map(({ label, key }) => (
-                    <div key={key} style={{ flex: 1, minWidth: 200 }}>
-                      <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 2, color: "#c9a84c", textTransform: "uppercase", marginBottom: 8 }}>{label}</div>
-                      <div style={{
-                        background: "#13151c", border: "1px solid #272932", borderRadius: 3,
-                        padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
-                      }}>
-                        <span style={{ fontFamily: "'DM Mono'", fontSize: 13, color: live[key] ? "#e0d8c8" : "#333", letterSpacing: 1 }}>
-                          {live[key]
-                            ? (showSensitive[live.id + key] ? live[key] : "•".repeat(Math.min(live[key].length, 9)))
-                            : "—"}
-                        </span>
-                        {live[key] ? (
-                          <button
-                            className="btn"
-                            onClick={() => setShowSensitive(prev => ({ ...prev, [live.id + key]: !prev[live.id + key] }))}
-                            style={{ background: "transparent", color: "#556", fontSize: 11, padding: "2px 6px", fontFamily: "'DM Mono'", letterSpacing: 1 }}
-                          >
-                            {showSensitive[live.id + key] ? "HIDE" : "SHOW"}
-                          </button>
-                        ) : (
-                          <button className="btn" onClick={() => openEdit(live)} style={{
-                            background: "transparent", color: "#c9a84c44", fontSize: 10,
-                            padding: "2px 6px", fontFamily: "'DM Mono'", letterSpacing: 1,
-                          }}>ADD</button>
-                        )}
-                      </div>
+        {/* ACCOUNTS */}
+        {tab==="accounts"&&<>
+          <div style={s.stats}>
+            <div style={s.stat}><div style={s.statVal}>{accounts.length}</div><div style={s.statLbl}>Accounts</div></div>
+            <div style={s.stat}><div style={s.statVal}>{fmt(totalBal)}</div><div style={s.statLbl}>Total Balance</div></div>
+            <div style={s.stat}><div style={s.statVal}>{holders} {holders===1?"person":"people"}</div><div style={s.statLbl}>Holders</div></div>
+          </div>
+          <div style={s.bar}>
+            <input style={s.search} placeholder="Search by name, bank, or type…" value={search} onChange={e=>setSearch(e.target.value)}/>
+            <button style={s.btn("teal")} onClick={openAddAcct}>+ Add Account</button>
+          </div>
+          {Object.keys(byHolder).length===0&&<div style={s.empty}>🌿 No accounts yet — tap "+ Add Account" to get started.</div>}
+          {Object.entries(byHolder).map(([holder,accts])=>(
+            <div key={holder}>
+              <div style={s.grpTitle}>👤 {holder}</div>
+              {accts.map(a=>{
+                const[bg,fg]=instStyle(a.inst);
+                const[tbg,tfg]=TYPE_C[a.type]||TYPE_C.Other;
+                const open=activeAcct===a.id;
+                return(
+                  <div key={a.id} style={s.card(open)} onClick={()=>setActiveAcct(open?null:a.id)}>
+                    <div style={s.cardTop}>
+                      <div style={s.logo(bg,fg)}>{initials(a.inst)}</div>
+                      <div style={s.cardInfo}><div style={s.cardName}>{a.inst}</div><div style={s.cardSub}>{a.type}</div></div>
+                      <div><div style={s.cardBal}>{fmt(a.bal)}</div><div style={{textAlign:"right"}}><span style={s.badge(tbg,tfg)}>{a.type}</span></div></div>
                     </div>
-                  ))}
-                </div>
-
-                <div style={{ marginBottom: 36 }}>
-                  <div style={{ fontFamily: "'DM Mono'", fontSize: 10, letterSpacing: 3, color: "#c9a84c", textTransform: "uppercase", marginBottom: 16 }}>Post Transaction</div>
-                  <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                    <select value={txType} onChange={e => setTxType(e.target.value)} style={{
-                      background: "#13151c", border: "1px solid #272932", borderRadius: 3,
-                      padding: "10px 14px", fontSize: 12, color: "#c8c0b0", fontFamily: "'DM Mono'",
-                    }}>
-                      <option value="deposit">Deposit</option>
-                      <option value="withdrawal">Withdrawal</option>
-                    </select>
-                    <input
-                      type="number"
-                      value={txAmount}
-                      onChange={e => setTxAmount(e.target.value)}
-                      placeholder="Amount"
-                      style={{
-                        width: 160, background: "#13151c", border: "1px solid #272932",
-                        borderRadius: 3, padding: "10px 14px", fontSize: 13, color: "#e0d8c8",
-                      }}
-                    />
-                    <button className="btn" onClick={applyTransaction} style={{
-                      background: txType === "deposit" ? "#2a4a2a" : "#4a2a2a",
-                      color: txType === "deposit" ? "#a8d08d" : "#d08888",
-                      padding: "10px 22px", borderRadius: 3, fontSize: 12, letterSpacing: 1.5,
-                      textTransform: "uppercase",
-                      border: `1px solid ${txType === "deposit" ? "#3a6a3a" : "#6a3a3a"}`,
-                    }}>Apply</button>
+                    {open&&<div style={s.details}>
+                      <div style={s.row}><span style={s.rl}>Account Holder</span><span style={s.rv}>{a.holder}</span></div>
+                      <div style={s.row}><span style={s.rl}>Account #</span><span style={s.rv}>{a.acct?<>{a.rev?.acct?a.acct:mask(a.acct)}<button style={s.reveal} onClick={e=>{e.stopPropagation();toggleRev(a.id,"acct");}}>{a.rev?.acct?"hide":"show"}</button></>:"—"}</span></div>
+                      <div style={s.row}><span style={s.rl}>Routing #</span><span style={s.rv}>{a.routing?<>{a.rev?.routing?a.routing:mask(a.routing)}<button style={s.reveal} onClick={e=>{e.stopPropagation();toggleRev(a.id,"routing");}}>{a.rev?.routing?"hide":"show"}</button></>:"—"}</span></div>
+                      <div style={{...s.row,borderBottom:"none"}}><span style={s.rl}>Institution</span><span style={s.rv}>{a.inst}</span></div>
+                      {a.notes&&<div style={s.note}>✦ {a.notes}</div>}
+                      <div style={s.cardBtns}><button style={{...s.btn("soft"),fontSize:11,padding:"5px 13px"}} onClick={e=>{e.stopPropagation();openEditAcct(a);}}>✏️ Edit</button></div>
+                    </div>}
                   </div>
-                </div>
+                );
+              })}
+            </div>
+          ))}
+        </>}
 
-                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                  <button className="btn" onClick={() => openEdit(live)} style={{
-                    background: "#1e2028", color: "#c9a84c", padding: "10px 22px",
-                    borderRadius: 3, fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase",
-                    border: "1px solid #c9a84c44",
-                  }}>Edit Account</button>
-                  {!confirmDelete
-                    ? <button className="btn" onClick={() => setConfirmDelete(true)} style={{
-                        background: "#1e2028", color: "#888", padding: "10px 22px",
-                        borderRadius: 3, fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase",
-                        border: "1px solid #333",
-                      }}>Remove Account</button>
-                    : <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <span style={{ fontFamily: "'DM Mono'", fontSize: 12, color: "#d08888" }}>Confirm delete?</span>
-                        <button className="btn" onClick={deleteAccount} style={{
-                          background: "#4a2a2a", color: "#d08888", padding: "8px 16px",
-                          borderRadius: 3, fontSize: 12, border: "1px solid #6a3a3a",
-                        }}>Yes, Remove</button>
-                        <button className="btn" onClick={() => setConfirmDelete(false)} style={{
-                          background: "#1e2028", color: "#666", padding: "8px 14px", borderRadius: 3, fontSize: 12,
-                        }}>Cancel</button>
-                      </div>
-                  }
+        {/* CONTACTS */}
+        {tab==="contacts"&&<>
+          <div style={{...s.bar,marginTop:4}}><button style={s.btn("blush")} onClick={openAddEc}>+ Add Contact</button></div>
+          {contacts.length===0&&<div style={s.empty}>🤍 No emergency contacts yet — add someone who should have access.</div>}
+          {contacts.length>0&&<div style={s.grpTitle}>In case of emergency, contact:</div>}
+          {contacts.map(c=>{
+            const open=activeEc===c.id;
+            return(
+              <div key={c.id} style={s.ecCard(open)} onClick={()=>setActiveEc(open?null:c.id)}>
+                <div style={s.cardTop}>
+                  <div style={s.avatar}>{initials(c.name)}</div>
+                  <div style={s.cardInfo}><div style={s.cardName}>{c.name}</div><div style={{...s.cardSub,color:"#b07ab8"}}>{c.rel}</div></div>
                 </div>
+                {open&&<div style={s.details}>
+                  <div style={s.row}><span style={s.rl}>Relationship</span><span style={s.rv}>{c.rel}</span></div>
+                  <div style={{...s.row,borderBottom:"none"}}><span style={s.rl}>Phone</span><span style={s.rv}><a href={`tel:${c.phone}`} style={{color:"#8a4a6e",textDecoration:"none"}} onClick={e=>e.stopPropagation()}>{c.phone||"—"}</a></span></div>
+                  <div style={s.cardBtns}><button style={{...s.btn("blush"),fontSize:11,padding:"5px 13px"}} onClick={e=>{e.stopPropagation();openEditEc(c);}}>✏️ Edit</button></div>
+                </div>}
               </div>
             );
-          })()}
-        </div>
+          })}
+        </>}
+
+        {/* BACKUP */}
+        {tab==="backup"&&<>
+          <div style={s.grpTitle}>Export your data</div>
+          <div style={s.exportCard}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>💾 Backup File (JSON)</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Saves everything — accounts, contacts, your name, and welcome message. Email it to yourself or save to Google Drive.</div>
+            <button style={s.btn("teal")} onClick={doExportJSONFull}>Download Backup</button>
+          </div>
+          <div style={s.exportCard}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>📊 Export as Spreadsheet (CSV)</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Opens in Excel or Google Sheets. Great for sharing with a trusted person or attorney.</div>
+            <button style={s.btn("gold")} onClick={()=>doExportCSV(accounts,contacts)}>Download CSV</button>
+          </div>
+          <div style={s.exportCard}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>🖨️ Print / Save as PDF</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Opens a print-ready page with all your accounts and contacts. Choose "Save as PDF" in the print dialog.</div>
+            <button style={s.btn("soft")} onClick={()=>doExportPrint(accounts,contacts,ownerName)}>Print or Save PDF</button>
+          </div>
+          <div style={{...s.exportCard,borderColor:"#ddb0cc"}}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>📂 Restore from Backup</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Upload a previous backup file to restore everything — accounts, contacts, and your personal settings.</div>
+            <input ref={fileRef} type="file" accept=".json" style={{display:"none"}} onChange={handleRestoreFile}/>
+            <button style={s.btn("blush")} onClick={()=>fileRef.current.click()}>Upload Backup File</button>
+          </div>
+        </>}
+
+        {/* SETTINGS */}
+        {tab==="settings"&&<>
+          <div style={s.grpTitle}>Personal Settings</div>
+          <div style={s.exportCard}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>✏️ Update Your Name & Welcome Message</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Change your name or update the message shown on your home screen.</div>
+            <div style={{marginBottom:12}}>
+              <label style={s.flbl}>Your Name</label>
+              <input style={s.finp()} value={ownerName} onChange={e=>{setOwnerName(e.target.value);localStorage.setItem("tm_owner_name",e.target.value);}} placeholder="Your name"/>
+            </div>
+            <div style={{marginBottom:12}}>
+              <label style={s.flbl}>Welcome Message</label>
+              <textarea style={{...s.finp(),height:80,resize:"vertical"}} value={welcomeMsg} onChange={e=>{setWelcomeMsg(e.target.value);localStorage.setItem("tm_welcome_msg",e.target.value);}} placeholder="A personal note for anyone reading this ledger…"/>
+            </div>
+            <button style={s.btn("teal")} onClick={()=>notify("Settings saved ✦")}>Save Changes</button>
+          </div>
+          <div style={s.grpTitle}>Security</div>
+          <div style={s.exportCard}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>🔐 Change PIN</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Update your PIN code at any time.</div>
+            <button style={s.btn("teal")} onClick={()=>{setChangingPin(true);setAppState("setup_pin");}}>Change PIN</button>
+          </div>
+          <div style={s.exportCard}>
+            <div style={{fontSize:14,fontWeight:600,color:"#2d4a47",marginBottom:4}}>🔒 Lock App Now</div>
+            <div style={{fontSize:12,color:"#7ab8b0",marginBottom:12,lineHeight:1.5}}>Lock immediately. Your PIN will be required to get back in.</div>
+            <button style={s.btn("danger")} onClick={()=>setAppState("locked")}>Lock Now</button>
+          </div>
+        </>}
       </div>
 
-      {toast && (
-        <div className="toast" style={{
-          position: "fixed", bottom: 28, right: 28, zIndex: 999,
-          background: toast.ok ? "#1a2e1a" : "#2e1a1a",
-          color: toast.ok ? "#a8d08d" : "#d08888",
-          border: `1px solid ${toast.ok ? "#3a6a3a" : "#6a3a3a"}`,
-          padding: "12px 22px", borderRadius: 4,
-          fontFamily: "'DM Mono'", fontSize: 13, letterSpacing: 0.5,
-          boxShadow: "0 4px 24px rgba(0,0,0,0.5)",
-        }}>{toast.msg}</div>
+      {/* ACCOUNT MODAL */}
+      {acctModal&&(
+        <div style={s.overlay} onClick={e=>{if(e.target===e.currentTarget)setAcctModal(false);}}>
+          <div style={s.modal("teal")}>
+            <h2 style={s.modalH2("teal")}>{editAcctId?"Edit Account ✦":"Add an Account ✦"}</h2>
+            {[{lbl:"Account Belongs To",key:"holder",placeholder:"e.g. Your name or your child's name"},{lbl:"Institution",key:"inst",placeholder:"e.g. Navy Federal, Cash App"}].map(f=>(
+              <div key={f.key}><label style={s.flbl}>{f.lbl}</label><input style={s.finp()} value={acctForm[f.key]} placeholder={f.placeholder} onChange={e=>setAcctForm(p=>({...p,[f.key]:e.target.value}))}/></div>
+            ))}
+            <label style={s.flbl}>Account Type</label>
+            <select style={s.finp()} value={acctForm.type} onChange={e=>setAcctForm(p=>({...p,type:e.target.value}))}>
+              {["Checking","Savings","Money Market","Investment","Credit Card","Loan","Other"].map(t=><option key={t}>{t}</option>)}
+            </select>
+            <label style={s.flbl}>Balance ($)</label>
+            <input style={s.finp()} type="number" value={acctForm.bal} placeholder="0.00" onChange={e=>setAcctForm(p=>({...p,bal:e.target.value}))}/>
+            <label style={s.flbl}>Account Number</label>
+            <input style={s.finp()} value={acctForm.acct} placeholder="Optional" onChange={e=>setAcctForm(p=>({...p,acct:e.target.value}))}/>
+            <label style={s.flbl}>Routing Number</label>
+            <input style={s.finp()} value={acctForm.routing} placeholder="Optional" onChange={e=>setAcctForm(p=>({...p,routing:e.target.value}))}/>
+            <label style={s.flbl}>Notes (emergency context)</label>
+            <textarea style={{...s.finp(),height:70,resize:"vertical"}} value={acctForm.notes} placeholder="e.g. Direct deposit. Call Navy Federal at 1-888-842-6328." onChange={e=>setAcctForm(p=>({...p,notes:e.target.value}))}/>
+            <div style={s.modalBtns}>
+              <button style={s.btn("teal")} onClick={saveAcct}>Save ✦</button>
+              <button style={s.btn("soft")} onClick={()=>setAcctModal(false)}>Cancel</button>
+              {editAcctId&&<button style={{...s.btn("soft"),borderColor:"#e8c4c4",color:"#b05050"}} onClick={deleteAcct}>Remove</button>}
+            </div>
+          </div>
+        </div>
       )}
+
+      {/* CONTACT MODAL */}
+      {ecModal&&(
+        <div style={s.overlay} onClick={e=>{if(e.target===e.currentTarget)setEcModal(false);}}>
+          <div style={s.modal("blush")}>
+            <h2 style={s.modalH2("blush")}>{editEcId?"Edit Contact 🤍":"Add Emergency Contact 🤍"}</h2>
+            {[{lbl:"Full Name",key:"name",placeholder:"e.g. Jessica Worthy"},{lbl:"Relationship",key:"rel",placeholder:"e.g. Sister, Attorney, Trusted Friend"},{lbl:"Phone Number",key:"phone",placeholder:"e.g. (251) 555-0100",type:"tel"}].map(f=>(
+              <div key={f.key}><label style={s.flbl}>{f.lbl}</label><input style={s.finp("blush")} type={f.type||"text"} value={ecForm[f.key]} placeholder={f.placeholder} onChange={e=>setEcForm(p=>({...p,[f.key]:e.target.value}))}/></div>
+            ))}
+            <div style={s.modalBtns}>
+              <button style={s.btn("blush")} onClick={saveEc}>Save 🤍</button>
+              <button style={s.btn("soft")} onClick={()=>setEcModal(false)}>Cancel</button>
+              {editEcId&&<button style={{...s.btn("soft"),borderColor:"#e8c4c4",color:"#b05050"}} onClick={deleteEc}>Remove</button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast&&<div style={s.toastBox(toast.ok)}>{toast.msg}</div>}
     </div>
   );
 }
